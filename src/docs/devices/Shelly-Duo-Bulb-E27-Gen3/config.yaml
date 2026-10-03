@@ -1,0 +1,36 @@
+esphome:
+  name: shelly-duo-bulb-e27-gen3
+  friendly_name: "Shelly Duo Bulb E27 Gen3"
+
+esp32:
+  variant: ESP32C3
+  board: esp32-c3-devkitm-1
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+logger:
+
+wifi:
+  ap:
+
+captive_portal:
+
+output:
+  - platform: ledc
+    id: out_cold_white
+    pin: GPIO5
+  - platform: ledc
+    id: out_warm_white
+    pin: GPIO4
+
+light:
+  - platform: cwww
+    id: bulb
+    name: "Light"
+    cold_white: out_cold_white
+    warm_white: out_warm_white
+    cold_white_color_temperature: 6500 K
+    warm_white_color_temperature: 2700 K
+    constant_brightness: true
+    default_transition_length: 0s
