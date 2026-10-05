@@ -18,19 +18,6 @@ esp32:
 
 logger:
 wifi:
-  ssid: 
-  password: 
-api:
-ota:
-  - platform: esphome
-    on_begin:
-      - lambda: id(display).show_ota_begin();
-    on_progress:
-      - lambda: id(display).show_ota_progress(x);
-    on_end:
-      - lambda: id(display).show_ota_end();
-    on_error:
-      - lambda: id(display).show_ota_error();
 
 external_components:
   - source: github://oxynatOr/esphome-shelly_ht_gen3
@@ -72,10 +59,6 @@ sensor:
     internal: true
     samples: 15
 
-time:
-  - platform: homeassistant
-    id: ha_time
-
 # Layer 1: Generic UC8119 EPD segment display driver
 uc8119:
   id: epd
@@ -109,7 +92,6 @@ shelly_ht_display:
   temperature_sensor: temp_sensor
   humidity_sensor: humi_sensor
   wifi_signal_sensor: wifi_rssi
-  time_id: ha_time
 
 output:
   - platform: gpio
