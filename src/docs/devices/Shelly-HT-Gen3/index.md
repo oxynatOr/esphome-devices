@@ -59,9 +59,31 @@ Use pogo pins, test clips, or solder temporary wires for flashing.
 
 ## Flashing
 
-> **Note:** OTA flashing from the original Shelly firmware is **not possible**.
-> Shelly Gen3 verifies OTA images with an ECDSA signature using their private key.
-> The device must be flashed via UART using the PCB test pads.
+The device can be flashed in two ways:
+
+- **OTA from the Shelly stock firmware** using the [**ShellyOTA**](https://github.com/oxynatOr/free-shelly-ota) script.
+- **UART** via the PCB test pads (needed for recovery or if OTA is not possible).
+
+### OTA from Shelly Stock Firmware
+
+Requirements:
+
+- Stock firmware **2.0.1** or **2.0.2** (tested). Other versions are untested.
+- Battery level of at least **35 %**, otherwise the update is refused.
+- The ESPHome build must use the Shelly **stock partition table**, so the image fits the
+  layout on the device. Copy `docu/csv/HTG3-stock.csv` from this repository next to your YAML
+  and add the `partitions` and `CONFIG_PARTITION_TABLE_OFFSET` lines shown in the
+  configurations below.
+
+Build the firmware with `esphome compile` and upload the resulting OTA binary with
+[**ShellyOTA**](https://github.com/oxynatOr/free-shelly-ota).
+
+> **Note:** The partition table of the device stays Shelly's. The CSV only makes ESPHome build
+> against the same layout. The table sits at `0xf000` on this device.
+
+After the first ESPHome flash, further updates work through the normal ESPHome OTA.
+
+### Flashing via UART
 
 To enter download mode, short **pad 7 (GPIO9)** to **pad 4 (GND)** while powering on the device. Release after boot.
 
@@ -75,7 +97,7 @@ esptool.py --chip esp32c3 --port /dev/ttyUSB0 --baud 460800 \
   read_flash 0 0x800000 shelly-ht-gen3-backup.bin
 ```
 
-### Compile and Flash
+### Compile and Flash (UART)
 
 ```bash
 esphome compile shelly-ht-gen3.yaml
@@ -94,11 +116,13 @@ esp32:
   board: esp32-c3-devkitm-1
   variant: ESP32C3
   flash_size: 8MB
+  partitions: csv/HTG3-stock.csv
   framework:
     type: esp-idf
     version: recommended
     sdkconfig_options:
       COMPILER_OPTIMIZATION_SIZE: y
+      CONFIG_PARTITION_TABLE_OFFSET: "0xf000"
     advanced:
       enable_ota_rollback: false
 
@@ -249,11 +273,13 @@ esp32:
   board: esp32-c3-devkitm-1
   variant: ESP32C3
   flash_size: 8MB
+  partitions: csv/HTG3-stock.csv
   framework:
     type: esp-idf
     version: recommended
     sdkconfig_options:
       COMPILER_OPTIMIZATION_SIZE: y
+      CONFIG_PARTITION_TABLE_OFFSET: "0xf000"
     advanced:
       enable_ota_rollback: false
 
@@ -463,9 +489,8 @@ next wake (no white flash).
 
 ## Known Limitations
 
-- **OTA from Shelly firmware not possible:** ECDSA signature
-  verification prevents flashing ESPHome OTA from stock firmware.
-  UART flashing required.
+- **OTA from Shelly firmware needs ShellyOTA:** Only tested with stock firmware 2.0.1 and 2.0.2,
+  and the battery must be at least 35 %. UART flashing remains available as a fallback.
 - **Battery percentage accuracy:** The voltage-to-percentage mapping
   may need calibration for your battery chemistry and temperature.
   Default range (4.0V–6.0V) is for 4× AA alkaline batteries.
