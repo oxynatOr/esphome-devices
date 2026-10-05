@@ -106,7 +106,7 @@ esptool.py --chip esp32c3 --port /dev/ttyUSB0 --baud 460800 \
 ```
 
 ## Basic Configuration (USB Powered)
-```yaml file=device.yaml
+```yaml file=config.yaml
 ```
 
 
