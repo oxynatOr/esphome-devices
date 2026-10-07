@@ -196,7 +196,7 @@ next wake (no white flash).
 
 ## Known Limitations
 
-- **OTA from Shelly firmware needs ShellyOTA:** Only tested with stock firmware 2.0.1 
+- **OTA from Shelly firmware needs ShellyOTA:** Only tested with stock firmware 2.0.1
   and the battery must be at least 35 %. UART flashing remains available as a fallback.
 - **Battery percentage accuracy:** The voltage-to-percentage mapping
   may need calibration for your battery chemistry and temperature.
