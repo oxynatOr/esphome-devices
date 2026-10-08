@@ -1,0 +1,160 @@
+substitutions:
+  name: shelly-plug-s-gen3
+  friendly_name: Shelly Plug S Gen3
+
+  # BL0942 references: the ESPHome defaults, see plug-calibration.yaml to adjust them at runtime
+  voltage_reference: "15883.34116"
+  current_reference: "251065.6814"
+  power_reference: "623.0270705"
+  energy_reference: "5347.484240"
+  update_interval_bl0942: 1s
+  update_interval_adc: 1s
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  variant: esp32c3
+  framework:
+    type: esp-idf
+
+wifi:
+  ap:
+
+logger:
+
+uart:
+  id: uart_0
+  tx_pin: GPIO7
+  rx_pin:
+    number: GPIO6
+    mode:
+      input: true
+      pullup: true
+  baud_rate: 9600
+  stop_bits: 1
+  data_bits: 8
+  parity: NONE
+  rx_full_threshold: 23
+
+globals:
+  # Button state shared with the optional add-ons (plug-gestures.yaml sets them)
+  - id: button_locked
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: gesture_suppress_until
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+binary_sensor:
+  - platform: gpio
+    id: push_button
+    name: "Button"
+    internal: true
+    pin:
+      number: GPIO18
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on_off: 5ms
+    on_multi_click:
+      # a single short press toggles the relay (unless the child lock of plug-gestures.yaml is on)
+      - timing:
+          - ON for at most 0.4s
+          - OFF for at least 0.35s
+        then:
+          - if:
+              condition:
+                lambda: "return !id(button_locked);"
+              then:
+                - switch.toggle: relay
+
+switch:
+  - platform: gpio
+    id: relay
+    name: "Relay"
+    pin: GPIO4
+    restore_mode: RESTORE_DEFAULT_OFF
+
+sensor:
+  - platform: bl0942
+    id: bl0942_1
+    uart_id: uart_0
+    address: 0
+    update_interval: ${update_interval_bl0942}
+    voltage_reference: ${voltage_reference}
+    current_reference: ${current_reference}
+    power_reference: ${power_reference}
+    energy_reference: ${energy_reference}
+    voltage:
+      name: "Voltage"
+      id: bvoltage
+      icon: mdi:alpha-v-circle-outline
+      device_class: voltage
+      state_class: measurement
+      unit_of_measurement: "V"
+    current:
+      name: "Current"
+      id: bcurrent
+      icon: mdi:alpha-a-circle-outline
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+    power:
+      name: "Power"
+      unit_of_measurement: W
+      id: bpower
+      icon: mdi:transmission-tower
+      device_class: power
+      state_class: measurement
+    energy:
+      name: "Energy"
+      id: benergy
+      icon: mdi:lightning-bolt
+      device_class: energy
+      state_class: total_increasing
+    frequency:
+      name: "Frequency"
+      id: bfreq
+      accuracy_decimals: 2
+      icon: mdi:cosine-wave
+      device_class: frequency
+      state_class: measurement
+
+  - platform: ntc
+    id: ntc_temp
+    sensor: temp_resistance_reading
+    name: "Temperature"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    icon: "mdi:thermometer"
+    calibration:
+      b_constant: 3350
+      reference_resistance: 10kOhm
+      reference_temperature: 298.15K
+  - platform: resistance
+    id: temp_resistance_reading
+    sensor: temp_analog_reading
+    configuration: DOWNSTREAM
+    resistor: 10kOhm
+  - platform: adc
+    id: temp_analog_reading
+    pin: GPIO3
+    update_interval: ${update_interval_adc}
+    attenuation: 12db
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: rgb_lights
+    name: "LED"
+    chipset: WS2812
+    rgb_order: GRB
+    pin: GPIO5
+    num_leds: 4
+    default_transition_length: 0ms
+    restore_mode: ALWAYS_OFF

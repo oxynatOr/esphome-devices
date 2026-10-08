@@ -1,0 +1,97 @@
+# ---------------------------------------------------------------------------
+# plug-diagnostics.yaml - optional diagnostics (needs plug-protection.yaml)
+#
+#   "Last Fault"    cause and time of the last latched fault (survives reboots)
+#   "Fault Count"   number of latched faults since flashing
+#   "Relay Cycles"  how often the relay was switched on (wear estimate)
+# Needs a time source (e.g. time: homeassistant) for the fault timestamp.
+# ---------------------------------------------------------------------------
+
+globals:
+  - id: dg_count
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: dg_reason
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: dg_time            # unix time of the last fault, 0 = clock unknown
+    type: uint32_t
+    restore_value: true
+    initial_value: "0"
+  - id: dg_cycles
+    type: uint32_t
+    restore_value: true
+    initial_value: "0"
+  - id: dg_prev
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+interval:
+  # detect the moment a fault gets latched
+  - interval: 1s
+    then:
+      - lambda: |-
+          const bool now_active = id(fault_active);
+          if (now_active && !id(dg_prev)) {
+            id(dg_count) += 1;
+            id(dg_reason) = id(fault_reason);
+            const time_t t = ::time(nullptr);
+            id(dg_time) = (t > 1600000000) ? (uint32_t) t : 0;
+          }
+          id(dg_prev) = now_active;
+
+binary_sensor:
+  - platform: template
+    name: "Relay Cycle Watch"
+    id: dg_relay_watch
+    internal: true
+    lambda: 'return id(relay).state;'
+    on_press:
+      - lambda: |-
+          id(dg_cycles) += 1;
+
+text_sensor:
+  - platform: template
+    name: "Last Fault"
+    icon: "mdi:alert-circle-outline"
+    entity_category: diagnostic
+    update_interval: 10s
+    lambda: |-
+      if (id(dg_count) == 0) return std::string("none");
+      const char *r = "power";
+      switch (id(dg_reason)) {
+        case 1: r = "over-temperature"; break;
+        case 2: r = "over-current"; break;
+        case 4: r = "temperature sensor"; break;
+        default: break;
+      }
+      char buf[32] = "clock unknown";
+      if (id(dg_time) != 0) {
+        time_t t = id(dg_time);
+        struct tm tm_f;
+        localtime_r(&t, &tm_f);
+        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_f);
+      }
+      return std::string(r) + ", " + buf;
+
+sensor:
+  - platform: template
+    name: "Fault Count"
+    icon: "mdi:counter"
+    entity_category: diagnostic
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: 'return (float) id(dg_count);'
+
+  - platform: template
+    name: "Relay Cycles"
+    icon: "mdi:counter"
+    entity_category: diagnostic
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: 'return (float) id(dg_cycles);'

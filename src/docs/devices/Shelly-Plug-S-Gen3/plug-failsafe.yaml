@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# plug-failsafe.yaml - optional: what the plug does when Home Assistant is gone
+#
+# Without this file the relay simply keeps its state (ESPHome never switches
+# off by itself when the API connection is lost) - but the ESPHome default
+# reboot timeouts (15 min without API / Wi-Fi) restart the device, which cuts
+# the relay for a moment. This file therefore disables both reboot timeouts:
+# the plug keeps running, whatever the network does.
+#
+# Substitutions:
+#   failsafe_action   "KEEP"  KEEP = do nothing (default; the relay never changes)
+#                             ON   = switch the relay on when HA is away too long
+#                             OFF  = switch the relay off when HA is away too long
+#   failsafe_timeout  "10"    minutes without an API connection before acting
+#
+# Typical use: a freezer plug that HA sometimes switches off (schedule/energy
+# saving) - with "ON" the plug can never stay off because HA died.
+# A latched fault always wins: the failsafe never overrides the Fault Lock.
+# The action runs once per outage and never again until HA has been back.
+# ---------------------------------------------------------------------------
+
+substitutions:
+  failsafe_action: "KEEP"
+  failsafe_timeout: "10"
+
+api:
+  reboot_timeout: 0s
+
+wifi:
+  reboot_timeout: 0s
+
+globals:
+  - id: fs_since
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: fs_done
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+interval:
+  - interval: 5s
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          if (api::global_api_server != nullptr && api::global_api_server->is_connected()) {
+            id(fs_since) = 0;
+            id(fs_done) = false;
+            return;
+          }
+          if (id(fs_since) == 0) id(fs_since) = now ? now : 1;
+          if (id(fs_done) || (now - id(fs_since)) < (uint32_t)(${failsafe_timeout}) * 60000UL) return;
+          id(fs_done) = true;
+          const std::string a = "${failsafe_action}";
+          if (a == "ON" && !id(fault_active)) {
+            ESP_LOGW("failsafe", "Home Assistant unreachable: relay ON");
+            id(relay).turn_on();
+          } else if (a == "OFF") {
+            ESP_LOGW("failsafe", "Home Assistant unreachable: relay OFF");
+            id(relay).turn_off();
+          }

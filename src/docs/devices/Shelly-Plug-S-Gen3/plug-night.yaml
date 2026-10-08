@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------------------
+# plug-night.yaml - optional night mode for plug-led.yaml
+#
+# Dims the LED effects to night_brightness (defined in plug-led.yaml, 0 = LEDs off).
+# Faults, feedback and warnings are never dimmed.
+#
+#   "Night Mode"       manual switch
+#   "Night Mode Auto"  schedule night_start ... night_end (uses the clock)
+#
+# Optional substitutions:  night_start "22"   night_end "6"   (hours, 0-23)
+# Needs a time source (e.g. time: homeassistant) for the schedule.
+# ---------------------------------------------------------------------------
+
+substitutions:
+  night_start: "22"
+  night_end: "6"
+
+esphome:
+  on_boot:
+    - priority: -110.0
+      then:
+        - script.execute: update_night
+
+interval:
+  # Re-evaluate the schedule (the switches trigger it immediately)
+  - interval: 30s
+    then:
+      - script.execute: update_night
+
+script:
+  # Night mode = manual switch OR (auto switch AND inside the time window)
+  - id: update_night
+    mode: restart
+    then:
+      - lambda: |-
+          bool active = id(night_mode).state;
+          if (!active && id(night_auto).state) {
+            time_t t = ::time(nullptr);
+            struct tm tm_now;
+            localtime_r(&t, &tm_now);
+            if (tm_now.tm_year > 100) {  // clock is synchronised
+              const int s = ${night_start};
+              const int e = ${night_end};
+              const int h = tm_now.tm_hour;
+              active = (s > e) ? (h >= s || h < e) : (h >= s && h < e);
+            }
+          }
+          id(night_active) = active;
+
+switch:
+  - platform: template
+    id: night_mode
+    name: "Night Mode"
+    icon: "mdi:weather-night"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - script.execute: update_night
+    on_turn_off:
+      - script.execute: update_night
+
+  - platform: template
+    id: night_auto
+    name: "Night Mode Auto"
+    icon: "mdi:clock-time-ten-outline"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - script.execute: update_night
+    on_turn_off:
+      - script.execute: update_night

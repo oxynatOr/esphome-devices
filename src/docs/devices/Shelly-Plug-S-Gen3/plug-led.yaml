@@ -1,0 +1,423 @@
+# ---------------------------------------------------------------------------
+# plug-led.yaml - optional status LED package for the Shelly Plug S Gen3.
+# Use it together with config.yaml AND plug-protection.yaml (it shows the fault state).
+#
+# The 4 WS2812 LEDs show the status. Pick the light effect "Live Current",
+# "Live Power" or "Live Temperature" in Home Assistant:
+#   red breathing = fault, magenta = temperature sensor fault, amber blink = close to a limit,
+#   red pulse on LED 1 = no Wi-Fi, amber pulse = no API client, blue runner = OTA update.
+#
+# If you already have an `ota:` entry with platform esphome, give it `id: ota_esphome`.
+# ---------------------------------------------------------------------------
+
+substitutions:
+  warn_ratio: "0.8"  # pre-warning at this fraction of a limit
+  power_bar_min: "2"  # W, bottom of the logarithmic power scale
+  night_brightness: "0.05"  # LED brightness factor in night mode
+  max_current: "10"  # A, same value as in plug-protection.yaml
+  max_power: "2400"  # W
+  max_temp: "70"  # °C
+
+globals:
+  - id: system_status
+    type: int
+    restore_value: false
+    initial_value: "0"  # 0=OK, 1=no Wi-Fi, 2=no API client, 3=OTA update
+
+  # Pre-warning is held for 1.5 s after the last sample above the warn level
+  - id: warn_hold_until
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # One-shot LED feedback: 0=none, 1=press while locked, 2=press while faulted,
+  # 3=child lock engaged, 4=child lock released (set by plug-gestures.yaml)
+  - id: fx_kind
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: fx_start
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # Index of the running effect: 0=Current, 1=Power, 2=Temperature
+  - id: effect_idx
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+  # Night mode is active (set by an optional night add-on; stays false without it)
+  - id: night_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+esphome:
+  on_boot:
+    - priority: 15.0
+      then:
+        - light.turn_on:
+            id: rgb_lights
+            effect: "Live Current"
+
+wifi:
+  on_connect:
+    - lambda: |-
+        if (id(system_status) == 1) id(system_status) = 0;
+  on_disconnect:
+    - lambda: |-
+        id(system_status) = 1;
+
+api:
+  on_client_connected:
+    - lambda: |-
+        if (id(system_status) == 2) id(system_status) = 0;
+  on_client_disconnected:
+    - lambda: |-
+        // do not overwrite the Wi-Fi (1) and OTA (3) states
+        if (id(system_status) == 0) id(system_status) = 2;
+
+ota:
+  - platform: esphome
+    id: ota_esphome
+    on_state_change:
+      - lambda: |-
+          if (state == esphome::ota::OTA_STARTED) id(system_status) = 3;
+          if (state == esphome::ota::OTA_COMPLETED || state == esphome::ota::OTA_ERROR) id(system_status) = 0;
+
+light:
+  - id: !extend rgb_lights
+    default_transition_length: 0ms
+    effects:
+      - addressable_lambda:
+          name: "Live Current"
+          update_interval: 50ms
+          lambda: |-
+            uint32_t now = millis();
+            const int n = it.size();
+            id(effect_idx) = 0;
+
+            // Live readings (fall back to harmless values until the first sample arrives)
+            const float cur = (id(bcurrent).has_state() && !std::isnan(id(bcurrent).state)) ? id(bcurrent).state : 0.0f;
+            const float pwr = (id(bpower).has_state() && !std::isnan(id(bpower).state)) ? id(bpower).state : 0.0f;
+            const float tmp = (id(ntc_temp).has_state() && !std::isnan(id(ntc_temp).state)) ? id(ntc_temp).state : 25.0f;
+
+            // Pre-warning: any value at or above warn_ratio of its limit (held for 1.5 s)
+            const float wr = (float)(${warn_ratio});
+            if (cur >= wr * (float)(${max_current}) || pwr >= wr * (float)(${max_power}) ||
+                tmp >= wr * (float)(${max_temp})) {
+              id(warn_hold_until) = now + 1500;
+            }
+
+            // One-shot feedback animation (button presses, child lock changes)
+            const int fx_k = id(fx_kind);
+            const uint32_t fx_el = now - id(fx_start);
+            const uint32_t fx_dur = (fx_k == 1) ? 1200 : (fx_k == 2) ? 3000 : (fx_k == 3) ? 900 : 700;
+
+            const float nf = id(night_active) ? (float)(${night_brightness}) : 1.0f;
+            bool dim = true;  // night-mode dimming applies unless a priority branch clears it
+
+            if (fx_k != 0 && fx_el < fx_dur) {
+              // PRIO 1: feedback animation
+              dim = false;
+              if (fx_k == 1) {          // pressed while child lock is on: orange blink
+                bool on = (fx_el / 200) % 2 == 0;
+                for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(255, 90, 0) : esphome::Color::BLACK;
+              } else if (fx_k == 2) {   // pressed while a fault is latched: fast red blink
+                bool on = (fx_el / 150) % 2 == 0;
+                for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(255, 0, 0) : esphome::Color::BLACK;
+              } else if (fx_k == 3) {   // child lock engaged: orange fills up
+                int lit = (int)((fx_el * (n + 1)) / 500);
+                for (int i = 0; i < n; i++) it[i] = (i < lit) ? esphome::Color(255, 90, 0) : esphome::Color::BLACK;
+              } else {                  // child lock released: green empties
+                int lit = n - (int)((fx_el * (n + 1)) / 500);
+                for (int i = 0; i < n; i++) it[i] = (i < lit) ? esphome::Color(0, 255, 40) : esphome::Color::BLACK;
+              }
+            } else if (id(fault_active)) {
+              // PRIO 2: fault latched - red breathing on all LEDs
+              dim = false;
+              float p = (sinf(now * 0.004f) + 1.0f) / 2.0f;
+              for (int i = 0; i < n; i++) it[i] = esphome::Color(30 + p * 120, 0, 0);
+            } else if (id(ntc_bad)) {
+              // PRIO 3: temperature sensor fault (protection is blind) - magenta slow blink
+              dim = false;
+              bool on = (now / 600) % 2 == 0;
+              for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(200, 0, 200) : esphome::Color::BLACK;
+            } else if ((int32_t)(id(warn_hold_until) - now) > 0) {
+              // PRIO 4: pre-warning - amber blink on all LEDs
+              dim = false;
+              bool on = (now / 250) % 2 == 0;
+              for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(255, 120, 0) : esphome::Color::BLACK;
+            } else if (id(system_status) == 1) {
+              // PRIO 5: no Wi-Fi - red pulse on LED 0
+              float pulse = (sinf(now * 0.005f) + 1.0f) / 2.0f;
+              it[0] = esphome::Color(pulse * 255, 0, 0);
+              for (int i = 1; i < n; i++) it[i] = esphome::Color::BLACK;
+            } else if (id(system_status) == 2) {
+              // PRIO 5: no API client - amber pulse on all LEDs
+              float pulse = (sinf(now * 0.003f) + 1.0f) / 2.0f;
+              for (int i = 0; i < n; i++) it[i] = esphome::Color(pulse * 230, pulse * 60, 0);
+            } else if (id(system_status) == 3) {
+              // PRIO 5: OTA update - blue runner
+              int led_index = (now / 150) % n;
+              for (int i = 0; i < n; i++) {
+                it[i] = (i == led_index) ? esphome::Color(0, 0, 255) : esphome::Color(0, 0, 20);
+              }
+            } else {
+              // PRIO 6: the effect itself
+              // Live Current: 0 .. max_current, linear
+              float frac = cur / (float)(${max_current});
+              // frac (0..1) -> bar over the LEDs, green -> red, partial LEDs fade in smoothly
+              if (frac > 1.0f) frac = 1.0f;
+              if (frac < 0.0f) frac = 0.0f;
+              float raw = frac * (float)n;
+              if (id(relay).state && raw < 0.15f) raw = 0.15f;  // relay on, no load: LED 0 glows faintly
+              for (int i = 0; i < n; i++) {
+                float level = raw - (float)i;
+                if (level > 1.0f) level = 1.0f;
+                if (level < 0.0f) level = 0.0f;
+                float factor = (n > 1) ? (float)i / (float)(n - 1) : 0.0f;
+                it[i] = esphome::Color(factor * 255 * level, (1.0f - factor) * 255 * level, 0);
+              }
+
+              // Child lock on: last LED breathes orange on top of the effect
+              if (id(button_locked)) {
+                float lp = (sinf(now * 0.003f) + 1.0f) / 2.0f;
+                it[n - 1] = esphome::Color(60 + lp * 195, 20 + lp * 70, 0);
+              }
+            }
+
+            if (fx_k != 0 && fx_el >= fx_dur) id(fx_kind) = 0;
+
+            // Night mode: scale everything that is not a fault / feedback / warning
+            if (dim && nf < 1.0f) {
+              for (int i = 0; i < n; i++) {
+                esphome::Color c = it[i].get();
+                it[i] = esphome::Color(c.r * nf, c.g * nf, c.b * nf);
+              }
+            }
+
+      - addressable_lambda:
+          name: "Live Power"
+          update_interval: 50ms
+          lambda: |-
+            uint32_t now = millis();
+            const int n = it.size();
+            id(effect_idx) = 1;
+
+            // Live readings (fall back to harmless values until the first sample arrives)
+            const float cur = (id(bcurrent).has_state() && !std::isnan(id(bcurrent).state)) ? id(bcurrent).state : 0.0f;
+            const float pwr = (id(bpower).has_state() && !std::isnan(id(bpower).state)) ? id(bpower).state : 0.0f;
+            const float tmp = (id(ntc_temp).has_state() && !std::isnan(id(ntc_temp).state)) ? id(ntc_temp).state : 25.0f;
+
+            // Pre-warning: any value at or above warn_ratio of its limit (held for 1.5 s)
+            const float wr = (float)(${warn_ratio});
+            if (cur >= wr * (float)(${max_current}) || pwr >= wr * (float)(${max_power}) ||
+                tmp >= wr * (float)(${max_temp})) {
+              id(warn_hold_until) = now + 1500;
+            }
+
+            // One-shot feedback animation (button presses, child lock changes)
+            const int fx_k = id(fx_kind);
+            const uint32_t fx_el = now - id(fx_start);
+            const uint32_t fx_dur = (fx_k == 1) ? 1200 : (fx_k == 2) ? 3000 : (fx_k == 3) ? 900 : 700;
+
+            const float nf = id(night_active) ? (float)(${night_brightness}) : 1.0f;
+            bool dim = true;  // night-mode dimming applies unless a priority branch clears it
+
+            if (fx_k != 0 && fx_el < fx_dur) {
+              // PRIO 1: feedback animation
+              dim = false;
+              if (fx_k == 1) {          // pressed while child lock is on: orange blink
+                bool on = (fx_el / 200) % 2 == 0;
+                for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(255, 90, 0) : esphome::Color::BLACK;
+              } else if (fx_k == 2) {   // pressed while a fault is latched: fast red blink
+                bool on = (fx_el / 150) % 2 == 0;
+                for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(255, 0, 0) : esphome::Color::BLACK;
+              } else if (fx_k == 3) {   // child lock engaged: orange fills up
+                int lit = (int)((fx_el * (n + 1)) / 500);
+                for (int i = 0; i < n; i++) it[i] = (i < lit) ? esphome::Color(255, 90, 0) : esphome::Color::BLACK;
+              } else {                  // child lock released: green empties
+                int lit = n - (int)((fx_el * (n + 1)) / 500);
+                for (int i = 0; i < n; i++) it[i] = (i < lit) ? esphome::Color(0, 255, 40) : esphome::Color::BLACK;
+              }
+            } else if (id(fault_active)) {
+              // PRIO 2: fault latched - red breathing on all LEDs
+              dim = false;
+              float p = (sinf(now * 0.004f) + 1.0f) / 2.0f;
+              for (int i = 0; i < n; i++) it[i] = esphome::Color(30 + p * 120, 0, 0);
+            } else if (id(ntc_bad)) {
+              // PRIO 3: temperature sensor fault (protection is blind) - magenta slow blink
+              dim = false;
+              bool on = (now / 600) % 2 == 0;
+              for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(200, 0, 200) : esphome::Color::BLACK;
+            } else if ((int32_t)(id(warn_hold_until) - now) > 0) {
+              // PRIO 4: pre-warning - amber blink on all LEDs
+              dim = false;
+              bool on = (now / 250) % 2 == 0;
+              for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(255, 120, 0) : esphome::Color::BLACK;
+            } else if (id(system_status) == 1) {
+              // PRIO 5: no Wi-Fi - red pulse on LED 0
+              float pulse = (sinf(now * 0.005f) + 1.0f) / 2.0f;
+              it[0] = esphome::Color(pulse * 255, 0, 0);
+              for (int i = 1; i < n; i++) it[i] = esphome::Color::BLACK;
+            } else if (id(system_status) == 2) {
+              // PRIO 5: no API client - amber pulse on all LEDs
+              float pulse = (sinf(now * 0.003f) + 1.0f) / 2.0f;
+              for (int i = 0; i < n; i++) it[i] = esphome::Color(pulse * 230, pulse * 60, 0);
+            } else if (id(system_status) == 3) {
+              // PRIO 5: OTA update - blue runner
+              int led_index = (now / 150) % n;
+              for (int i = 0; i < n; i++) {
+                it[i] = (i == led_index) ? esphome::Color(0, 0, 255) : esphome::Color(0, 0, 20);
+              }
+            } else {
+              // PRIO 6: the effect itself
+              // Live Power: power_bar_min .. max_power on a logarithmic scale, so standby
+              // (a few W) and full load (kW) are both readable on 4 LEDs
+              const float pmin = (float)(${power_bar_min});
+              const float pmax = (float)(${max_power});
+              float frac = 0.0f;
+              if (pwr > pmin && pmax > pmin) frac = (log10f(pwr) - log10f(pmin)) / (log10f(pmax) - log10f(pmin));
+              // frac (0..1) -> bar over the LEDs, green -> red, partial LEDs fade in smoothly
+              if (frac > 1.0f) frac = 1.0f;
+              if (frac < 0.0f) frac = 0.0f;
+              float raw = frac * (float)n;
+              if (id(relay).state && raw < 0.15f) raw = 0.15f;  // relay on, no load: LED 0 glows faintly
+              for (int i = 0; i < n; i++) {
+                float level = raw - (float)i;
+                if (level > 1.0f) level = 1.0f;
+                if (level < 0.0f) level = 0.0f;
+                float factor = (n > 1) ? (float)i / (float)(n - 1) : 0.0f;
+                it[i] = esphome::Color(factor * 255 * level, (1.0f - factor) * 255 * level, 0);
+              }
+
+              // Child lock on: last LED breathes orange on top of the effect
+              if (id(button_locked)) {
+                float lp = (sinf(now * 0.003f) + 1.0f) / 2.0f;
+                it[n - 1] = esphome::Color(60 + lp * 195, 20 + lp * 70, 0);
+              }
+            }
+
+            if (fx_k != 0 && fx_el >= fx_dur) id(fx_kind) = 0;
+
+            // Night mode: scale everything that is not a fault / feedback / warning
+            if (dim && nf < 1.0f) {
+              for (int i = 0; i < n; i++) {
+                esphome::Color c = it[i].get();
+                it[i] = esphome::Color(c.r * nf, c.g * nf, c.b * nf);
+              }
+            }
+
+      - addressable_lambda:
+          name: "Live Temperature"
+          update_interval: 50ms
+          lambda: |-
+            uint32_t now = millis();
+            const int n = it.size();
+            id(effect_idx) = 2;
+
+            // Live readings (fall back to harmless values until the first sample arrives)
+            const float cur = (id(bcurrent).has_state() && !std::isnan(id(bcurrent).state)) ? id(bcurrent).state : 0.0f;
+            const float pwr = (id(bpower).has_state() && !std::isnan(id(bpower).state)) ? id(bpower).state : 0.0f;
+            const float tmp = (id(ntc_temp).has_state() && !std::isnan(id(ntc_temp).state)) ? id(ntc_temp).state : 25.0f;
+
+            // Pre-warning: any value at or above warn_ratio of its limit (held for 1.5 s)
+            const float wr = (float)(${warn_ratio});
+            if (cur >= wr * (float)(${max_current}) || pwr >= wr * (float)(${max_power}) ||
+                tmp >= wr * (float)(${max_temp})) {
+              id(warn_hold_until) = now + 1500;
+            }
+
+            // One-shot feedback animation (button presses, child lock changes)
+            const int fx_k = id(fx_kind);
+            const uint32_t fx_el = now - id(fx_start);
+            const uint32_t fx_dur = (fx_k == 1) ? 1200 : (fx_k == 2) ? 3000 : (fx_k == 3) ? 900 : 700;
+
+            const float nf = id(night_active) ? (float)(${night_brightness}) : 1.0f;
+            bool dim = true;  // night-mode dimming applies unless a priority branch clears it
+
+            if (fx_k != 0 && fx_el < fx_dur) {
+              // PRIO 1: feedback animation
+              dim = false;
+              if (fx_k == 1) {          // pressed while child lock is on: orange blink
+                bool on = (fx_el / 200) % 2 == 0;
+                for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(255, 90, 0) : esphome::Color::BLACK;
+              } else if (fx_k == 2) {   // pressed while a fault is latched: fast red blink
+                bool on = (fx_el / 150) % 2 == 0;
+                for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(255, 0, 0) : esphome::Color::BLACK;
+              } else if (fx_k == 3) {   // child lock engaged: orange fills up
+                int lit = (int)((fx_el * (n + 1)) / 500);
+                for (int i = 0; i < n; i++) it[i] = (i < lit) ? esphome::Color(255, 90, 0) : esphome::Color::BLACK;
+              } else {                  // child lock released: green empties
+                int lit = n - (int)((fx_el * (n + 1)) / 500);
+                for (int i = 0; i < n; i++) it[i] = (i < lit) ? esphome::Color(0, 255, 40) : esphome::Color::BLACK;
+              }
+            } else if (id(fault_active)) {
+              // PRIO 2: fault latched - red breathing on all LEDs
+              dim = false;
+              float p = (sinf(now * 0.004f) + 1.0f) / 2.0f;
+              for (int i = 0; i < n; i++) it[i] = esphome::Color(30 + p * 120, 0, 0);
+            } else if (id(ntc_bad)) {
+              // PRIO 3: temperature sensor fault (protection is blind) - magenta slow blink
+              dim = false;
+              bool on = (now / 600) % 2 == 0;
+              for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(200, 0, 200) : esphome::Color::BLACK;
+            } else if ((int32_t)(id(warn_hold_until) - now) > 0) {
+              // PRIO 4: pre-warning - amber blink on all LEDs
+              dim = false;
+              bool on = (now / 250) % 2 == 0;
+              for (int i = 0; i < n; i++) it[i] = on ? esphome::Color(255, 120, 0) : esphome::Color::BLACK;
+            } else if (id(system_status) == 1) {
+              // PRIO 5: no Wi-Fi - red pulse on LED 0
+              float pulse = (sinf(now * 0.005f) + 1.0f) / 2.0f;
+              it[0] = esphome::Color(pulse * 255, 0, 0);
+              for (int i = 1; i < n; i++) it[i] = esphome::Color::BLACK;
+            } else if (id(system_status) == 2) {
+              // PRIO 5: no API client - amber pulse on all LEDs
+              float pulse = (sinf(now * 0.003f) + 1.0f) / 2.0f;
+              for (int i = 0; i < n; i++) it[i] = esphome::Color(pulse * 230, pulse * 60, 0);
+            } else if (id(system_status) == 3) {
+              // PRIO 5: OTA update - blue runner
+              int led_index = (now / 150) % n;
+              for (int i = 0; i < n; i++) {
+                it[i] = (i == led_index) ? esphome::Color(0, 0, 255) : esphome::Color(0, 0, 20);
+              }
+            } else {
+              // PRIO 6: the effect itself
+              // Live Temperature: 25 degC (blue) .. max_temp (red), whole strip one colour
+              const float min_t = 25.0f;
+              const float max_t = (float)(${max_temp});
+              float factor = (tmp - min_t) / (max_t - min_t);
+              if (factor > 1.0f) factor = 1.0f;
+              if (factor < 0.0f) factor = 0.0f;
+
+              uint8_t r = 0, g = 0, b = 0;
+              if (factor < 0.5f) {
+                float sub = factor * 2.0f;
+                g = sub * 255;
+                b = (1.0f - sub) * 255;
+              } else {
+                float sub = (factor - 0.5f) * 2.0f;
+                r = sub * 255;
+                g = (1.0f - sub) * 255;
+              }
+              for (int i = 0; i < n; i++) it[i] = esphome::Color(r, g, b);
+
+              // Child lock on: last LED breathes orange on top of the effect
+              if (id(button_locked)) {
+                float lp = (sinf(now * 0.003f) + 1.0f) / 2.0f;
+                it[n - 1] = esphome::Color(60 + lp * 195, 20 + lp * 70, 0);
+              }
+            }
+
+            if (fx_k != 0 && fx_el >= fx_dur) id(fx_kind) = 0;
+
+            // Night mode: scale everything that is not a fault / feedback / warning
+            if (dim && nf < 1.0f) {
+              for (int i = 0; i < n; i++) {
+                esphome::Color c = it[i].get();
+                it[i] = esphome::Color(c.r * nf, c.g * nf, c.b * nf);
+              }
+            }

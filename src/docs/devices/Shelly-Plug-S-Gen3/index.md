@@ -4,17 +4,29 @@ date-published: 2024-12-05
 type: plug
 standard: eu
 board: esp32
-difficulty: 4
+difficulty: 3
 ---
 
-Generation 3 of Shelly Plug-S
+Generation 3 of the [Shelly Plug S](https://www.shelly.com/products/shelly-plug-s-gen3) (ESP32-C3, BL0942 power
+meter, relay, NTC temperature sensor, 4 WS2812 status LEDs, button).
 
-At this moment there is NO way to Flash it OTA. You need to open the Plug and use UART!
+## Flashing
 
-As always, first take a dump!
+There are two ways to get ESPHome onto the plug.
+
+### Option 1: OTA from the stock firmware (Free-Shelly-OTA)
+
+The plug does not have to be opened. Build the ESPHome firmware with the [basic configuration](#configuration) plus
+the [OTA stock layout settings](#optional-ota-from-the-stock-firmware) and upload the resulting image using
+[**Free-Shelly-OTA**](https://github.com/oxynatOr/free-shelly-ota).
+
+### Option 2: UART
+
+Open the plug (see [Open the device](#open-the-device)) and connect a USB-UART adapter. As always, first take a dump!
+
 `esptool -b 115200 --port COM11 read_flash 0x00000 0x800000 shelly_plug_s_gen3.bin`
 
-## UART Pinout
+#### UART Pinout
 
 | Pin     | Colour |
 | ------- | ------ |
@@ -34,305 +46,183 @@ As always, first take a dump!
 | GPIO3  | Internal Temperature |
 | GPIO4  | Relay                |
 | GPIO5  | LED WS2812           |
-| GPIO6  | BL0942 TX            |
-| GPIO7  | BL0942 RX            |
+| GPIO6  | BL0942 RX            |
+| GPIO7  | BL0942 TX            |
 | GPIO18 | Button               |
 
-```yaml
-substitutions:
-  device_name: shelly-plug-s-gen3
-  friendly_name: "Shelly Plug S Gen3"
-  update_bl0942: 5s
-  max_power: "1500"
-  max_temp: "60.0"
-  channel_1: Relay
+## Configuration
 
-esphome:
-  name: ${device_name}
-  friendly_name: ${friendly_name}
-  comment: "Free Shelly!"
-  on_boot:
-    - delay: 10s
-    - lambda: !lambda |-
-        id(rgb_ready) = true;
-    - script.execute: set_rgb
+The basic configuration uses a plain `gpio` relay switch. A single short press of the button toggles the relay (with a
+delay of about 0.35 s, because the button waits for a possible second click). The `*_reference` values of the BL0942
+are the ESPHome defaults; see the calibration add-on below to adjust them.
 
-esp32:
-  variant: esp32c3
-  framework:
-    type: esp-idf
+```yaml file=config.yaml
+```
 
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  ap:
-    ssid: "FreeShelly Hotspot"
-    password: !secret wifi_password
+## Optional: OTA from the stock firmware
 
-logger:
+A firmware that is flashed over the air from the stock Shelly firmware has to follow the stock flash layout.
+Otherwise the image installs, but the plug does not boot afterwards. The additional config below adds these settings:
 
-api:
+| Setting | Why |
+| ------- | --- |
+| `flash_size: 8MB` | The plug has 8 MB of flash. |
+| `partitions: PlugSG3-stock.csv` | Shelly's own partition layout, placed next to your YAML file. |
+| `CONFIG_PARTITION_TABLE_OFFSET: "0x10000"` | The stock firmware keeps the partition table at `0x10000`, not at the ESP-IDF default `0x8000`. Without this the firmware cannot find its partitions at boot. |
+| `ota: platform: esphome` with `allow_partition_access: true` | Allows the OTA component to write to the partitions of the stock layout. |
 
-ota:
+```yaml file=ota-stock-layout.yaml
+```
 
-time:
-  - platform: homeassistant
-    id: my_time
+Add it to your own configuration with [packages](https://esphome.io/components/packages/):
 
-globals:
-  - id: rgb_ready
-    type: bool
-    restore_value: false
-    initial_value: "false"
+```yaml inline
+packages:
+  ota_stock: !include ota-stock-layout.yaml
+```
 
-script:
-  - id: set_rgb
-    mode: queued
-    then:
-      - if:
-          condition:
-            lambda: "return id(rgb_ready);"
-          then:
-            - if:
-                condition:
-                  lambda: "return id(relay).state;"
-                then:
-                  - if:
-                      condition:
-                        lambda: "return id(ring_on).remote_values.is_on();"
-                      then:
-                        - light.turn_on:
-                            id: rgb_light1
-                            brightness: !lambda |-
-                              return id(ring_on).remote_values.get_brightness();
-                            red: !lambda |-
-                              return id(ring_on).remote_values.get_red();
-                            green: !lambda |-
-                              return id(ring_on).remote_values.get_green();
-                            blue: !lambda |-
-                              return id(ring_on).remote_values.get_blue();
-                      else:
-                        - light.turn_off: rgb_light1
-                else:
-                  - if:
-                      condition:
-                        lambda: "return id(ring_off).remote_values.is_on();"
-                      then:
-                        - light.turn_on:
-                            id: rgb_light1
-                            brightness: !lambda |-
-                              return id(ring_off).remote_values.get_brightness();
-                            red: !lambda |-
-                              return id(ring_off).remote_values.get_red();
-                            green: !lambda |-
-                              return id(ring_off).remote_values.get_green();
-                            blue: !lambda |-
-                              return id(ring_off).remote_values.get_blue();
-                      else:
-                        - light.turn_off: rgb_light1
+Build the firmware and upload the image using [**Free-Shelly-OTA**](https://github.com/oxynatOr/free-shelly-ota).
+Once ESPHome is running, further updates work as usual via ESPHome OTA. Keep the settings above in every later build,
+otherwise the next OTA update can leave the plug unbootable (then UART is the only way back).
 
-output:
-  - platform: template
-    id: r_out_on
-    type: float
-    write_action:
-      - lambda: |-
-  - platform: template
-    id: g_out_on
-    type: float
-    write_action:
-      - lambda: |-
-  - platform: template
-    id: b_out_on
-    type: float
-    write_action:
-      - lambda: |-
-  - platform: template
-    id: r_out_off
-    type: float
-    write_action:
-      - lambda: |-
-  - platform: template
-    id: g_out_off
-    type: float
-    write_action:
-      - lambda: |-
-  - platform: template
-    id: b_out_off
-    type: float
-    write_action:
-      - lambda: |-
+## Optional add-ons
 
-binary_sensor:
-  - platform: gpio
-    id: "push_button"
-    name: "Button"
-    internal: true
-    pin:
-      number: GPIO18
-      inverted: true
-      mode:
-        input: true
-        pullup: true
-    filters:
-      - delayed_on_off: 5ms
-    on_click:
-      then:
-        - if:
-            condition:
-              switch.is_off: button_lock
-            then:
-              - switch.toggle: relay
+All add-ons below extend the entities of `config.yaml` (via `!extend`), so use them together with `config.yaml`, for
+example as [packages](https://esphome.io/components/packages/). Take only the ones you need:
 
-switch:
-  - platform: gpio
-    id: relay
-    pin: GPIO4
-    name: "Relay"
-    restore_mode: ALWAYS_ON
-  - platform: template
-    id: button_lock
-    name: "Button Lock"
-    optimistic: true
-    restore_mode: ALWAYS_OFF
+```yaml inline
+packages:
+  base: !include config.yaml
+  protection: !include plug-protection.yaml
+  led: !include plug-led.yaml
+  gestures: !include plug-gestures.yaml
+```
 
-light:
-  - platform: rgb
-    id: ring_on
-    name: "${channel_1} Ring when On"
-    icon: "mdi:circle-outline"
-    default_transition_length: 0s
-    red: r_out_on
-    green: g_out_on
-    blue: b_out_on
-    restore_mode: RESTORE_DEFAULT_OFF
-    entity_category: config
-    on_state:
-      - delay: 50ms
-      - script.execute: set_rgb
+| File | Needs | What it does |
+| ---- | ----- | ------------ |
+| `ota-stock-layout.yaml` | `PlugSG3-stock.csv` | OTA from the stock firmware, see above |
+| `plug-protection.yaml` | `api` | Over-current / over-power / over-temperature protection, NTC watchdog, staggered restart |
+| `plug-led.yaml` | `plug-protection.yaml` | Status LEDs with the effects Live Current / Power / Temperature |
+| `plug-gestures.yaml` | `plug-protection.yaml`, `plug-led.yaml` | Button gestures and child lock |
+| `plug-energy.yaml` | a `time:` platform | Energy Today / Energy Total sensors |
+| `plug-calibration.yaml` | `api` | BL0942 calibration at runtime, without reflashing |
+| `plug-night.yaml` | `plug-led.yaml` | Night mode: dims the LEDs, manually or on a schedule |
+| `plug-autooff.yaml` | `api` | Auto-off timer and standby killer |
+| `plug-failsafe.yaml` | `plug-protection.yaml` | Behaviour when Home Assistant is gone |
+| `plug-diagnostics.yaml` | `plug-protection.yaml` | Last fault, fault count, relay cycles |
 
-  - platform: rgb
-    id: ring_off
-    name: "${channel_1} Ring when Off"
-    icon: "mdi:circle-outline"
-    default_transition_length: 0s
-    red: r_out_off
-    green: g_out_off
-    blue: b_out_off
-    restore_mode: RESTORE_DEFAULT_OFF
-    entity_category: config
-    on_state:
-      - delay: 50ms
-      - script.execute: set_rgb
+The `config.yaml` must contain the entity ids that the add-ons extend (`ntc_temp`, `rgb_lights`, `bcurrent`,
+`bpower`, ...); they are already set there.
 
-  - platform: esp32_rmt_led_strip
-    rgb_order: GRB
-    chipset: ws2812
-    pin: GPIO5
-    num_leds: 4
-    id: rgb_light1
-    internal: false
-    default_transition_length: 700ms
-    restore_mode: ALWAYS_OFF
+### Protection
 
-uart:
-  id: uart_0
-  tx_pin: GPIO7
-  rx_pin: GPIO6
-  baud_rate: 9600
-  stop_bits: 1
-  data_bits: 8
-  parity: NONE
+Latched protection against over-current, over-power and over-temperature (switch **Fault Lock**, notification in
+Home Assistant), a temperature sensor watchdog (binary sensor **Temperature Sensor Fault**) and a staggered relay
+restart after a power loss. Clear a fault by holding the button for 2.5 s (only once the plug has cooled down) or by
+switching **Fault Lock** off. The limits (`max_current`, `max_power`, `max_temp`, ...) are substitutions at the top of
+the file; adjust them to your plug.
 
-sensor:
-  - platform: ntc
-    sensor: temp_resistance_reading
-    name: "Temperature"
-    unit_of_measurement: "°C"
-    accuracy_decimals: 1
-    icon: "mdi:thermometer"
-    calibration:
-      b_constant: 3350
-      reference_resistance: 10kOhm
-      reference_temperature: 298.15K
-    on_value_range:
-      - above: ${max_temp}
-        then:
-          - switch.turn_off: "relay"
-          - homeassistant.service:
-              service: persistent_notification.create
-              data:
-                title: Message from ${device_name}
-              data_template:
-                message: Switch turned off because temperature exceeded ${max_temp} °C
-  - platform: resistance
-    id: temp_resistance_reading
-    sensor: temp_analog_reading
-    configuration: DOWNSTREAM
-    resistor: 10kOhm
-  - platform: adc
-    id: temp_analog_reading
-    pin: GPIO3
-    attenuation: 12db
+```yaml file=plug-protection.yaml
+```
 
-  - platform: bl0942
-    uart_id: uart_0
-    address: 0
-    voltage:
-      name: "Voltage"
-      id: bvoltage
-      icon: mdi:alpha-v-circle-outline
-      device_class: voltage
-    current:
-      name: "Current"
-      id: bcurrent
-      icon: mdi:alpha-a-circle-outline
-      device_class: current
-    power:
-      name: "Power"
-      id: bpower
-      icon: mdi:transmission-tower
-      device_class: power
-      on_value_range:
-        - above: ${max_power}
-          then:
-            - switch.turn_off: relay
-            - homeassistant.service:
-                service: persistent_notification.create
-                data:
-                  title: Message from ${device_name}
-                data_template:
-                  message: Switch turned off because power exceeded ${max_power}W
-    energy:
-      name: "Energy"
-      id: benergy
-      icon: mdi:lightning-bolt
-      device_class: energy
-    frequency:
-      name: "Frequency"
-      id: bfreq
-      accuracy_decimals: 2
-      icon: mdi:cosine-wave
-      device_class: frequency
-    update_interval: ${update_bl0942}
+### Status LEDs
+
+The four LEDs show the status. Pick the effect **Live Current**, **Live Power** or **Live Temperature** in Home
+Assistant. Current and power are shown as a bar from green to red (power on a logarithmic scale), the temperature as a
+colour from blue to red. Red breathing = fault, magenta blink = temperature sensor fault, amber blink = close to a
+limit, red pulse on the first LED = no Wi-Fi, amber pulse = no API client, blue runner = OTA update.
+
+If you also use the OTA settings above, both files share the entry `id: ota_esphome`, so they merge. If you have your
+own `ota:` entry with platform esphome, give it that id.
+
+```yaml file=plug-led.yaml
+```
+
+### Button gestures and child lock
+
+| Gesture | Action |
+| ------- | ------ |
+| 1x click | Toggle the relay (blocked while the child lock is on) |
+| 2x click | Next LED effect (Current, Power, Temperature) |
+| 3x click | Child lock on (switch **Button Lock**, kept over a power loss) |
+| 3x click, hold the last press for 1.5 s | Child lock off |
+| Hold for 2.5 s | Acknowledge a fault (see Protection), otherwise LEDs on/off |
+
+The LEDs give feedback: orange blink = pressed while locked, fast red blink = pressed while a fault is latched,
+orange fill-up = child lock on, green fade-out = child lock off. While the child lock is on, the last LED breathes
+orange. The child lock only blocks the button, not Home Assistant.
+
+```yaml file=plug-gestures.yaml
+```
+
+### Energy
+
+```yaml file=plug-energy.yaml
+```
+
+### Calibration
+
+The `*_reference` values of the BL0942 are plain divisors, so they can be changed at runtime. Enter the value of a
+reference meter in **Cal Target Voltage/Current/Power** and press **Calibrate Voltage/Current/Power**. The new
+reference is stored in flash; **Reset Calibration** returns to the values from the YAML. The calibration can also
+be started from Home Assistant with the action `esphome.<device>_calibrate`.
+
+```yaml file=plug-calibration.yaml
+```
+
+### Night mode
+
+Dims the LED effects. Faults, feedback and warnings are never dimmed. **Night Mode** is a manual switch, **Night Mode
+Auto** follows a schedule (`night_start` and `night_end`, default 22 to 6 o'clock) and needs a `time:` platform.
+
+```yaml file=plug-night.yaml
+```
+
+### Auto-off timer and standby killer
+
+Both are off by default and only ever switch the relay off. Do not use the standby killer on compressor loads
+(freezer, fridge): their power is about 0 W while the compressor rests, and the plug would cut them off.
+
+```yaml file=plug-autooff.yaml
+```
+
+### Failsafe
+
+What the plug does when Home Assistant is gone: keep the relay as it is (default), switch it on or switch it off.
+This add-on also disables the ESPHome reboot timeouts, so a network outage does not restart the plug.
+
+```yaml file=plug-failsafe.yaml
+```
+
+### Diagnostics
+
+Last fault with time, fault count and relay cycles. Needs a `time:` platform for the timestamp.
+
+```yaml file=plug-diagnostics.yaml
 ```
 
 ## Open the device
 
 ![Seal](<../Shelly-Plug-S-Gen3/seal(plombe).jpeg> "Seal [thx to bkbartk]")
-This little seal need to drill open, best you use a prick punch with an M3.5-M4 Drill.
-![Drill](../Shelly-Plug-S-Gen3/drill_1.png "Drill M3.5 or M4")
 
-When the seal is cracked open, you need a M2 drill, and drill in center, just a little.
-![Drill](../Shelly-Plug-S-Gen3/drill_2.png "Drill M2")
+This little seal has to be drilled open. It is best to use a center punch and an M3.5-M4 drill bit.
+
+![Drilling the seal open with an M3.5 or M4 drill bit](../Shelly-Plug-S-Gen3/drill_1.jpg "Drill M3.5 or M4")
+
+Once the seal is cracked open, take an M2 drill bit and drill a little into the center.
+
+![Drilling into the center with an M2 drill bit](../Shelly-Plug-S-Gen3/drill_2.jpg "Drill M2")
 
 Now take a tapered punch and press the seal out. The whole grounding receptacle will come out.
 
-We need some hot-air (~300°C) and 5 of the iFixit triangle-plastic, there are 3 spots with glue.
-Heat them up, and try placeing the plastic around.
-![Open it up](../Shelly-Plug-S-Gen3/open_1.png "create a gap")
+You need a hot-air gun (~300 °C) and five iFixit opening picks (the plastic triangles). There are three spots with
+glue. Heat them up and try to slide the picks in around the housing.
 
-You will get a little gap, take anohter plastic and get betweet the white and transparent plastic, and make a circle.
-![Open it up](../Shelly-Plug-S-Gen3/open_2.png "open it up")
+![Picks around the housing to create a gap](../Shelly-Plug-S-Gen3/open_1.jpg "Create a gap")
 
-After 2 rounds you can easly take it out.
+This creates a small gap. Take another pick, slide it between the white and the transparent plastic, and work your
+way around in a circle.
+
+![Opening the housing with a pick](../Shelly-Plug-S-Gen3/open_2.jpg "Open it up")
+
+After two rounds you can easily take the device out of its housing.

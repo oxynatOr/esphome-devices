@@ -1,0 +1,128 @@
+# ---------------------------------------------------------------------------
+# plug-autooff.yaml - optional auto-off timer and standby killer
+#
+# Both are OFF by default and only ever switch the relay OFF.
+# DO NOT use the standby killer on compressor loads (freezer, fridge): their
+# power is ~0 W while the compressor rests, and the plug would cut them off.
+#
+#   "Auto-Off Timer"    minutes; the relay switches off this long after it was
+#                       switched on. 0 = disabled (default).
+#                       (Clock schedules such as "off at 22:00" belong in Home Assistant.)
+#   "Standby Killer"    switch, default OFF. When on: if the power stays below
+#   "Standby Threshold" W for "Standby Delay" minutes, the relay switches off.
+#   "Standby Delay"     Home Assistant gets a notification.
+# ---------------------------------------------------------------------------
+
+globals:
+  - id: ao_on_since       # millis() when the relay was switched on
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: sk_below_since    # millis() when the power first fell below the threshold
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: ao_event          # 0=none, 1=auto-off timer expired, 2=standby detected
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+number:
+  - platform: template
+    id: autooff_min
+    name: "Auto-Off Timer"
+    icon: "mdi:timer-outline"
+    optimistic: true
+    min_value: 0
+    max_value: 1440
+    step: 1
+    initial_value: 0
+    restore_value: true
+    unit_of_measurement: "min"
+    mode: box
+    entity_category: config
+
+  - platform: template
+    id: standby_watts
+    name: "Standby Threshold"
+    optimistic: true
+    min_value: 0
+    max_value: 100
+    step: 0.5
+    initial_value: 3
+    restore_value: true
+    unit_of_measurement: "W"
+    mode: box
+    entity_category: config
+
+  - platform: template
+    id: standby_delay_min
+    name: "Standby Delay"
+    optimistic: true
+    min_value: 1
+    max_value: 240
+    step: 1
+    initial_value: 10
+    restore_value: true
+    unit_of_measurement: "min"
+    mode: box
+    entity_category: config
+
+switch:
+  - platform: template
+    id: standby_killer
+    name: "Standby Killer"
+    icon: "mdi:power-sleep"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+
+binary_sensor:
+  # remembers when the relay was switched on (for the timer)
+  - platform: template
+    name: "Relay On Watch"
+    id: ao_relay_watch
+    internal: true
+    lambda: 'return id(relay).state;'
+    on_press:
+      - lambda: |-
+          id(ao_on_since) = millis();
+    on_release:
+      - lambda: |-
+          id(ao_on_since) = 0;
+          id(sk_below_since) = 0;
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          id(ao_event) = 0;
+          if (!id(relay).state) return;
+          // auto-off timer
+          const float mins = id(autooff_min).state;
+          if (mins > 0 && id(ao_on_since) != 0 && (now - id(ao_on_since)) >= (uint32_t)(mins * 60000.0f)) {
+            id(ao_event) = 1;
+          }
+          // standby killer
+          if (id(standby_killer).state && id(bpower).has_state() && !std::isnan(id(bpower).state)
+              && id(bpower).state < id(standby_watts).state) {
+            if (id(sk_below_since) == 0) id(sk_below_since) = now ? now : 1;
+            if ((now - id(sk_below_since)) >= (uint32_t)(id(standby_delay_min).state * 60000.0f)) {
+              id(ao_event) = 2;
+            }
+          } else {
+            id(sk_below_since) = 0;
+          }
+      - if:
+          condition:
+            lambda: 'return id(ao_event) != 0;'
+          then:
+            - switch.turn_off: relay
+            - homeassistant.service:
+                service: persistent_notification.create
+                data:
+                  title: "Message from ${name}"
+                  message: !lambda |-
+                    return std::string(id(ao_event) == 1 ? "Switched off: auto-off timer expired"
+                                                         : "Switched off: standby detected (standby killer)");
